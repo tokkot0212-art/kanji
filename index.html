@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>かんじ手帳</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Klee+One:wght@600&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap">
+<style>
+/* Layout: one column — input bar on top, grid of 原稿用紙-style squares below */
+:root{
+  --paper:#fbfcfa; --ink:#1d2a44; --muted:#5f6b7a; --grid:#7fae8f; --grid-soft:#cfe2d5;
+  --accent:#2c4a8a; --tile:#ffffff; --line:#dde3e0;
+  --f-kanji:"Klee One","Hiragino Mincho ProN","Yu Mincho",serif;
+  --f-ui:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --paper:#141a22; --ink:#eef1ec; --muted:#9aa6b2; --grid:#5f9a74; --grid-soft:#2b3f33;
+  --accent:#8fb0f0; --tile:#1b232d; --line:#2c3642; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#141a22; --ink:#eef1ec; --muted:#9aa6b2; --grid:#5f9a74; --grid-soft:#2b3f33;
+  --accent:#8fb0f0; --tile:#1b232d; --line:#2c3642; color-scheme:dark}
+html,body{height:100%;margin:0}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--f-ui);font-size:16px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:760px;margin:0 auto;padding-block:16px 40px;display:flex;flex-direction:column;gap:14px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+h1{margin:0;font-family:var(--f-kanji);font-size:22px;letter-spacing:.06em}
+.status{font-size:12px;color:var(--muted)}
+.bar{display:flex;gap:8px}
+input{flex:1;min-width:0;font:inherit;font-size:24px;padding:12px 14px;border:2px solid var(--line);
+  border-radius:10px;background:var(--tile);color:var(--ink)}
+input:focus{outline:none;border-color:var(--accent)}
+button{font:inherit;cursor:pointer}
+.reset{font-weight:700;font-size:16px;padding:0 18px;border-radius:10px;border:2px solid var(--accent);
+  background:var(--accent);color:var(--paper);white-space:nowrap}
+.reset:focus-visible,.tile:focus-visible{outline:3px solid var(--grid);outline-offset:2px}
+.hint{font-size:13px;color:var(--muted);margin:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.tile{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--tile);color:var(--ink)}
+.chars{display:flex;flex-wrap:wrap;justify-content:center}
+.sq{width:64px;height:64px;display:grid;place-items:center;font-family:var(--f-kanji);font-size:52px;line-height:1;
+  border:1.5px solid var(--grid);margin:-.75px;position:relative;
+  background:
+    linear-gradient(var(--grid-soft),var(--grid-soft)) center/100% 1px no-repeat,
+    linear-gradient(var(--grid-soft),var(--grid-soft)) center/1px 100% no-repeat}
+.sq span{position:relative}
+.empty{padding:40px 0;text-align:center;color:var(--muted);font-size:15px}
+/* enlarged view */
+.zoom{position:fixed;inset:0;background:var(--paper);z-index:20;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:24px;
+  padding:max(20px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) max(20px,env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.zoom .chars .sq{width:var(--z);height:var(--z);font-size:calc(var(--z)*.82);border-width:2px}
+.zoom button{padding:12px 28px;border-radius:10px;border:2px solid var(--line);background:var(--tile);color:var(--ink);font-size:16px}
+@media (prefers-reduced-motion:no-preference){.tile{transition:transform .1s}.tile:active{transform:scale(.97)}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>かんじ手帳</h1>
+    <span class="status" id="status">辞書を読み込み中…</span>
+  </header>
+  <div class="bar">
+    <input id="q" type="text" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off"
+      spellcheck="false" placeholder="ひらがなで入力" aria-label="ひらがな">
+    <button class="reset" id="reset" type="button">リセット</button>
+  </div>
+  <p class="hint">音声で入れるときは、キーボードのマイクボタンを使ってください。漢字をタップすると大きく表示します。</p>
+  <div id="out" class="grid" aria-live="polite"></div>
+</div>
+
+<div class="zoom" id="zoom" hidden>
+  <div class="chars" id="zchars"></div>
+  <button type="button" id="zclose">もどる</button>
+</div>
+
+<script>
+const q=document.getElementById('q'),out=document.getElementById('out'),st=document.getElementById('status');
+const zoom=document.getElementById('zoom'),zchars=document.getElementById('zchars');
+let D=null;
+
+async function load(){
+  try{
+    const r=await fetch('dict.json');let buf=new Uint8Array(await r.arrayBuffer());
+    if(buf[0]===0x1f&&buf[1]===0x8b){
+      const s=new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
+      buf=new Uint8Array(await new Response(s).arrayBuffer());
+    }
+    D=JSON.parse(new TextDecoder().decode(buf));
+    st.textContent='準備OK';search();
+  }catch(e){st.textContent='辞書を読み込めませんでした。ページを開き直してください';}
+}
+
+const kata2hira=s=>s.replace(/[ァ-ヶ]/g,c=>String.fromCharCode(c.charCodeAt(0)-0x60));
+const rows={k:'かきくけこ',g:'がぎぐげご',s:'さしすせそ',z:'ざじずぜぞ',t:'たちつてとっ',d:'だぢづでど',n:'なにぬねのん',
+  h:'はひふへほ',b:'ばびぶべぼ',p:'ぱぴぷぺぽ',m:'まみむめも',y:'やゆよ',r:'らりるれろ',w:'わを',
+  a:'あ',i:'い',u:'う',e:'え',o:'お'};
+const cons=c=>{for(const k in rows)if(rows[k].includes(c))return k;return null};
+
+function lookup(s){
+  const res=[],seen=new Set();
+  const add=w=>{if(!seen.has(w)){seen.add(w);res.push(w)}};
+  if(D.n[s])D.n[s].split('/').forEach(add);
+  // 送りがな付きの語（書く・美しい など）
+  const maxTail=res.length?2:3;
+  for(let i=s.length-1;i>=1&&s.length-i<=maxTail;i--){
+    const stem=s.slice(0,i),tail=s.slice(i);
+    if(/^[んぁぃぅぇぉゃゅょゎー]/.test(tail))continue;
+    const c=cons(tail[0]);if(!c)continue;
+    const e=D.a[stem+c];if(e){e.split('/').forEach(k=>add(k+tail));break}
+  }
+  return res;
+}
+
+function sqs(word){return [...word].map(ch=>`<div class="sq"><span>${ch}</span></div>`).join('')}
+
+let timer;
+function search(){
+  if(!D)return;
+  const s=kata2hira(q.value.trim()).replace(/\s/g,'');
+  if(!s){out.innerHTML='<div class="empty" style="grid-column:1/-1">ひらがなを入れると、漢字がここに大きく出ます</div>';return}
+  if(!/^[ぁ-ゖー]+$/.test(s)){out.innerHTML='<div class="empty" style="grid-column:1/-1">ひらがなで入力してください</div>';return}
+  const list=lookup(s).slice(0,60);
+  if(!list.length){out.innerHTML='<div class="empty" style="grid-column:1/-1">見つかりませんでした。区切りを変えて試してください</div>';return}
+  out.innerHTML=list.map(w=>`<button class="tile" type="button" data-w="${w}"><div class="chars">${sqs(w)}</div></button>`).join('');
+}
+
+q.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(search,150)});
+q.addEventListener('compositionend',search);
+out.addEventListener('click',e=>{
+  const t=e.target.closest('.tile');if(!t)return;
+  const w=t.dataset.w,n=[...w].length;
+  const z=Math.min(Math.floor((window.innerWidth-40)/Math.min(n,4)),Math.floor(window.innerHeight*0.6/Math.ceil(n/4)),320);
+  zchars.style.setProperty('--z',z+'px');zchars.innerHTML=sqs(w);zoom.hidden=false;
+});
+document.getElementById('zclose').onclick=()=>{zoom.hidden=true};
+document.getElementById('reset').onclick=()=>{q.value='';zoom.hidden=true;search();q.focus()};
+
+// 開くたびに空の状態から
+q.value='';search();load();
+window.addEventListener('pageshow',()=>{q.value='';zoom.hidden=true;search()});
+</script>
+</body>
+</html>
